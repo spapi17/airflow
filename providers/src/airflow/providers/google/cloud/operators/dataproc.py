@@ -2060,6 +2060,73 @@ class DataprocSubmitJobOperator(GoogleCloudBaseOperator):
         if self.job_id and self.cancel_on_kill:
             self.hook.cancel_job(job_id=self.job_id, project_id=self.project_id, region=self.region)
 
+    def get_openlineage_facets_on_complete(self, task_instance):
+        from airflow.providers.common.compat.openlineage.facet import (
+            Dataset,
+        )
+        # from airflow.composer.data_lineage.utils import xcom_pull
+        from airflow.providers.google.cloud.utils.dataproc import DataprocSQLJobLineageExtractor
+        from airflow.providers.openlineage.extractors import OperatorLineage
+
+        if not self.hook:
+            self.hook = DataprocHook(gcp_conn_id=self.gcp_conn_id, impersonation_chain=self.impersonation_chain)
+
+        try:
+            job = self.hook.get_job(job_id=self.job_id, project_id=self.project_id, region=self.region)
+        except NotFound:
+            self.log.exception(f"The job with id {self.job_id} wasn't found. Data lineage wasn't reported")
+            return #?? how do we handle errors in this func???
+
+        data_lineage_extractor = DataprocSQLJobLineageExtractor(
+            job=job, project_id=self.project_id, location=self.region
+        )
+
+        try:
+            inlets, outlets = data_lineage_extractor.data_lineage()
+            self.log(inlets)
+            self.log(outlets)
+            if not inlets:
+                log.info("No sources were detected. Data lineage wasn't reported")
+                return
+            if not outlets:
+                log.info("No targets were detected. Data lineage wasn't reported")
+                return
+
+            self.inlets.extend(inlets)
+            self.outlets.extend(outlets)
+        except AirflowException as ex:
+            self.log.info(ex)
+            return
+
+
+
+
+        # input_datasets = []
+        # for source_project_dataset_table in self.source_project_dataset_tables:
+        #     source_table_object = self.hook.get_client(self.hook.project_id).get_table(source_project_dataset_table)
+        #     input_dataset_facets = get_facets_from_bq_table(source_table_object)
+        #
+        #     input_datasets.append(Dataset(
+        #         namespace="bigquery",
+        #         name=str(source_table_object.reference),
+        #         facets=input_dataset_facets,
+        #     ))
+        #
+        # dest_table_object = self.hook.get_client(self.hook.project_id).get_table(self.destination_project_dataset_table)
+        # output_dataset_facets = get_facets_from_bq_table(dest_table_object)
+        #
+        # output_dataset_facets["columnLineage"] = get_identity_column_lineage_facet(
+        #     field_names=[field.name for field in dest_table_object.schema], input_datasets=input_datasets
+        # )
+        #
+        # output_dataset = Dataset(
+        #     namespace="bigquery",
+        #     name=str(dest_table_object.reference),
+        #     facets=output_dataset_facets,
+        # )
+
+        return OperatorLineage(inputs=input_datasets, outputs=[output_dataset])
+
 
 class DataprocUpdateClusterOperator(GoogleCloudBaseOperator):
     """
